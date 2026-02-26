@@ -1,0 +1,7 @@
+# Placeholder service request for students to replace.
+int32 box_index
+
+---
+# Placeholder service response for students to replace.
+bool success
+string message

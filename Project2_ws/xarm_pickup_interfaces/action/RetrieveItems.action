@@ -1,0 +1,17 @@
+# ===== Goal =====
+# Number of items to retrieve from the grid (1–9)
+int32 num_items
+
+---
+# ===== Result =====
+# Final outcome of the action
+int32 items_collected
+bool success
+string message
+
+---
+# ===== Feedback =====
+# Progress information during execution
+int32 current_box          # -1 if not currently evaluating a box
+int32 items_collected
+string state               # e.g. "searching", "moving", "grasping", "dropping"
