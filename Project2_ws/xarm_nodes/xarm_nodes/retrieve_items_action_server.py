@@ -29,6 +29,27 @@ class RetrieveItemsActionServer(Node):
         # Example:
         # self._your_client = self.create_client(YourServiceType, 'service_name')
 
+        # ================= COPY/PASTE BELOW =================
+gripper_closed_count = 671
+gripper_open_count   = 401
+
+POSITIONS = {
+    0: [401, 500, 500, 500, 500, 500],
+    1: [401, 700, 151, 849, 457, 651],
+    2: [401, 582, 161, 903, 535, 526],
+    3: [401, 392, 147, 828, 467, 369],
+    4: [401, 645, 182, 772, 411, 613],
+    5: [401, 535, 144, 755, 401, 518],
+    6: [401, 440, 147, 739, 390, 413],
+    7: [401, 619, 169, 629, 306, 602],
+    8: [401, 502, 194, 702, 343, 513],
+    9: [401, 436, 209, 686, 334, 422],
+}
+
+POSITION_DROP = [671, 491, 86, 755, 478, 880]
+# ================== COPY/PASTE ABOVE =================
+
+
         self._action_server = ActionServer(
             self,
             RetrieveItems,
