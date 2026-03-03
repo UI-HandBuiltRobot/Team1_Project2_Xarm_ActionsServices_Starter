@@ -1,0 +1,10 @@
+# MoveToDropoff.srv
+# This service defines the communication format for moving the arm to a dropoff location
+# Service request
+int32 dropoff_index
+
+---
+# Service response
+# returns information about the success of the operation and any relevant messages
+bool success
+string message

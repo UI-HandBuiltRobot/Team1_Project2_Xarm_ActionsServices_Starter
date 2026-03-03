@@ -1,0 +1,10 @@
+# MoveToBox.srv
+# This service defines the communication format for moving the arm to a cell
+#Service request
+int32 box_index
+
+---
+#Service response
+# returns information about the success of the operation and any relevant messages
+bool success
+string message

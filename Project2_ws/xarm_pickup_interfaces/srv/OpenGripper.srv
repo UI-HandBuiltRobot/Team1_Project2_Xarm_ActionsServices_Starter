@@ -1,0 +1,8 @@
+# OpenGripper.srv
+# This service defines the communication format for opening the gripper
+
+---
+# Service response
+# returns information about the success of the operation and any relevant messages
+bool success
+string message
