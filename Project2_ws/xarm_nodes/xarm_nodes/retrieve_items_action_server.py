@@ -9,6 +9,9 @@ You will need to:
   3. Fill in goal_callback, cancel_callback, and execute_callback.
 """
 
+from concurrent.futures import wait
+from unittest import result
+
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionServer
@@ -137,7 +140,7 @@ class RetrieveItemsActionServer(Node):
            
             move_req = MoveToGrid.Request()
             move_req.box_id = box_id
-            move_res = await self.move_box_client.call_async(move_req)
+            move_res = await self.move_grid_client.call_async(move_req)
 
             if not move_res.success:
                 continue
@@ -147,38 +150,40 @@ class RetrieveItemsActionServer(Node):
 
             grip_req = GripControl.Request()
             grip_req.close = True
-            await self.gripper_client.call_async(grip_req)
+            await self.grip_client.call_async(grip_req)
             
             feedback_msg.state = 'Checking grasp'
             goal_handle.publish_feedback(feedback_msg)
 
             check_req = GrabCheck.Request()
-            check_res = await self.check_grasp_client.call_async(check_req)
+            check_res = await self.check_client.call_async(check_req)
 
-            if check_res.object_detected:
-                feedback_msg.state = 'Moving to dropoff'
-                goal_handle.publish_feedback(feedback_msg)
+            if not check_res.object_detected:
+             grip_req.close = False
+             await self.grip_client.call_async(grip_req)
+             continue
 
-                await self.dropoff_client.call_async(MoveToDropoff.Request())
-               
+            await self.dropoff_client.call_async(MoveToDropoff.Request())
+
             grip_req.close = False
-            await self.gripper_client.call_async(grip_req)
-                
+            await self.grip_client.call_async(grip_req)
+
             collected += 1
             
             if collected == requested_items:
                 break
             
-            result.items_collected = collected
+        result.items_collected = collected
 
-            if collected == requested_items:
-                goal_handle.succeed()
-                result.success = True
-                result.message = 'Successfully collected requested items.'
-            else:
-                goal_handle.abort()
-                result.success = False
-                result.message = 'Not enough objects found in grid.'
+        if collected == requested_items:
+            goal_handle.succeed()
+            result.success = True
+            result.message = 'Successfully collected requested items.'
+        
+        else:
+            goal_handle.abort()
+            result.success = False
+            result.message = 'Not enough objects found in grid.'
         
         
         return result
