@@ -2,6 +2,8 @@
 .vscode/
 *.code-workspace
 
+Proj2-venv/
+
 # ROS2 build artifacts
 build/
 install/
