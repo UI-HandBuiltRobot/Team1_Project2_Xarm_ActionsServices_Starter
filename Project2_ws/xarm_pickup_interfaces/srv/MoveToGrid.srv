@@ -1,7 +1,7 @@
-# MoveToBox.srv
+# MoveToGrid.srv
 # This service defines the communication format for moving the arm to a cell
 #Service request
-int32 box_index
+int32 box_id
 
 ---
 #Service response

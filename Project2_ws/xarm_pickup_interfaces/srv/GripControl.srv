@@ -1,8 +1,8 @@
 # CloseGripper.srv
 # This service defines the communication format for closing the gripper
+bool close
 
 ---
 # Service response
 # returns information about the success of the operation and any relevant messages
-bool hasBlock
-string message
+bool success

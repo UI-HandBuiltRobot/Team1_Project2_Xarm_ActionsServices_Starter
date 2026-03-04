@@ -1,0 +1,7 @@
+# ServoOff.srv
+# service request
+
+---
+# Service response
+# returns information about the success of the operation and any relevant messages
+bool success
