@@ -2,7 +2,7 @@
 
 import rclpy
 from rclpy.node import Node
-# from xarm_pickup_interfaces.srv import YourServiceType  # TODO(STUDENTS): Import your service types here.
+from xarm_pickup_interfaces.srv import CloseGripper, MoveToDropoff, MoveToGrid, OpenGripper
 
 try:
     import xarm
@@ -20,6 +20,11 @@ class XArmHardwareNode(Node):
         # TODO(STUDENTS): Add your service servers here. Make sure that all services are defined in the xarm_pickup_interfaces package and that you import them at the top of this file.
         # Example:
         # self.create_service(YourServiceType, 'service_name', self.service_callback)
+        self.create_service(MoveToGrid, 'move_to_grid', self.move_to_grid_callback)
+        self.create_service(MoveToDropoff, 'move_to_dropoff', self.move_to_dropoff_callback)
+        self.create_service(OpenGripper, 'open_gripper', self.open_gripper_callback)
+        self.create_service(CloseGripper, 'close_gripper', self.close_gripper_callback)
+
 
         self.get_logger().info('x_arm_hardware_node is running.')
 

@@ -11,6 +11,7 @@ find_package(rosidl_default_generators REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GridServicePlaceholder.srv"
   "srv/MoveToDropoff.srv"
+  "srv/MoveToGrid.srv"
   "srv/OpenGripper.srv"
   "srv/CloseGripper.srv"
   "action/RetrieveItems.action"
