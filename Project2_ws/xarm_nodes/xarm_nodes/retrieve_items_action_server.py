@@ -16,7 +16,13 @@ from rclpy.action import CancelResponse, GoalResponse
 from rclpy.executors import MultiThreadedExecutor
 
 from xarm_pickup_interfaces.action import RetrieveItems
+
 # from xarm_pickup_interfaces.srv import YourServiceType  # TODO(STUDENTS): Import your service types here.
+from xarm_pickup_interfaces.srv import MoveToGrid
+from xarm_pickup_interfaces.srv import GripControl
+from xarm_pickup_interfaces.srv import GrabCheck
+from xarm_pickup_interfaces.srv import MoveToDropoff
+
 
 
 class RetrieveItemsActionServer(Node):
@@ -28,27 +34,11 @@ class RetrieveItemsActionServer(Node):
         # TODO(STUDENTS): Create service clients here for any hardware services you need.
         # Example:
         # self._your_client = self.create_client(YourServiceType, 'service_name')
-
-        # ================= COPY/PASTE BELOW =================
-gripper_closed_count = 671
-gripper_open_count   = 401
-
-POSITIONS = {
-    0: [401, 500, 500, 500, 500, 500],
-    1: [401, 700, 151, 849, 457, 651],
-    2: [401, 582, 161, 903, 535, 526],
-    3: [401, 392, 147, 828, 467, 369],
-    4: [401, 645, 182, 772, 411, 613],
-    5: [401, 535, 144, 755, 401, 518],
-    6: [401, 440, 147, 739, 390, 413],
-    7: [401, 619, 169, 629, 306, 602],
-    8: [401, 502, 194, 702, 343, 513],
-    9: [401, 436, 209, 686, 334, 422],
-}
-
-POSITION_DROP = [671, 491, 86, 755, 478, 880]
-# ================== COPY/PASTE ABOVE =================
-
+        self.move_grid_client = self.create_client(MoveToGrid, 'move_to_grid')
+        self.grip_client = self.create_client(GripControl, 'grip_control')
+        self.check_client = self.create_client(GrabCheck, 'grab_check')
+        self.dropoff_client = self.create_client(MoveToDropoff, 'move_to_dropoff')
+        
 
         self._action_server = ActionServer(
             self,
@@ -62,12 +52,19 @@ POSITION_DROP = [671, 491, 86, 755, 478, 880]
         self.get_logger().info('retrieve_items_action_server is running.')
 
     def goal_callback(self, goal_request):
+        
+        
         """Accept or reject an incoming goal request.
 
         TODO(STUDENTS): Add any validation logic here (e.g. reject if num_items is out of range).
         Return GoalResponse.REJECT to refuse a goal before execution begins.
         """
         self.get_logger().info(f'Received goal: num_items={goal_request.num_items}')
+        
+        if goal_request.num_items < 1 or goal_request.num_items > 9:
+            self.get_logger().warn('Invalid goal: num_items must be 1–9')
+            return GoalResponse.REJECT
+        
         return GoalResponse.ACCEPT
 
     def cancel_callback(self, goal_handle):
@@ -76,6 +73,7 @@ POSITION_DROP = [671, 491, 86, 755, 478, 880]
         TODO(STUDENTS): Return CancelResponse.REJECT if cancellation should be refused.
         """
         self.get_logger().info('Received cancel request.')
+        
         return CancelResponse.ACCEPT
 
     async def execute_callback(self, goal_handle):
@@ -119,8 +117,70 @@ POSITION_DROP = [671, 491, 86, 755, 478, 880]
         #     result.success = False
         #     result.message = 'Goal cancelled.'
         #     return result
+        requested_items = goal_handle.request.num_items
+        collected = 0
+        grid_boxes = list(range(1, 10))
+        
+        for box_id in grid_boxes:
+            if goal_handle.is_cancel_requested:
+                    self.get_logger().info('Goal cancelled.')
+                    goal_handle.canceled()
+                    result.success = False
+                    result.items_collected = collected
+                    result.message = 'Goal cancelled.'
+                    return result
+                
+            feedback_msg.current_box = box_id
+            feedback_msg.items_collected = collected
+            feedback_msg.state = 'Moving to box'
+            goal_handle.publish_feedback(feedback_msg)
+           
+            move_req = MoveToGrid.Request()
+            move_req.box_id = box_id
+            move_res = await self.move_box_client.call_async(move_req)
 
-        goal_handle.succeed()
+            if not move_res.success:
+                continue
+            
+            feedback_msg.state = 'Closing gripper'
+            goal_handle.publish_feedback(feedback_msg)
+
+            grip_req = GripControl.Request()
+            grip_req.close = True
+            await self.gripper_client.call_async(grip_req)
+            
+            feedback_msg.state = 'Checking grasp'
+            goal_handle.publish_feedback(feedback_msg)
+
+            check_req = GrabCheck.Request()
+            check_res = await self.check_grasp_client.call_async(check_req)
+
+            if check_res.object_detected:
+                feedback_msg.state = 'Moving to dropoff'
+                goal_handle.publish_feedback(feedback_msg)
+
+                await self.dropoff_client.call_async(MoveToDropoff.Request())
+               
+            grip_req.close = False
+            await self.gripper_client.call_async(grip_req)
+                
+            collected += 1
+            
+            if collected == requested_items:
+                break
+            
+            result.items_collected = collected
+
+            if collected == requested_items:
+                goal_handle.succeed()
+                result.success = True
+                result.message = 'Successfully collected requested items.'
+            else:
+                goal_handle.abort()
+                result.success = False
+                result.message = 'Not enough objects found in grid.'
+        
+        
         return result
 
 
