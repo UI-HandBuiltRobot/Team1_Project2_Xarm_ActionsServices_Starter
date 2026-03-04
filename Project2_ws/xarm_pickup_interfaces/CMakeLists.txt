@@ -9,11 +9,11 @@ find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
-  "srv/GridServicePlaceholder.srv"
   "srv/MoveToDropoff.srv"
   "srv/MoveToGrid.srv"
-  "srv/OpenGripper.srv"
-  "srv/CloseGripper.srv"
+  "srv/GripControl.srv"
+  "srv/GrabCheck.srv"
+  "srv/ServoOff.srv"
   "action/RetrieveItems.action"
 )
 

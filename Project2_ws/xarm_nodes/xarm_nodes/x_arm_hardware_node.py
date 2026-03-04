@@ -76,7 +76,7 @@ class XArmHardwareNode(Node):
 
         try:
             joint_targets = self.grid_positions[box_id]
-            self.arm.setPosition(joint_targets, wait=True)
+            self.arm.setPosition(*joint_targets, wait=True)
 
             response.success = True
             response.message = "Moved to grid box."
@@ -130,7 +130,7 @@ class XArmHardwareNode(Node):
             return response
 
         try:
-            self.arm.setPosition(self.dropoff_position, wait=True)
+            self.arm.setPosition(*self.dropoff_position, wait=True)
             response.success = True
         except Exception:
             response.success = False
