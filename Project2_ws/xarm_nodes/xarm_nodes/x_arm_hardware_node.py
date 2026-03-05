@@ -3,7 +3,8 @@ import time
 import rclpy
 from rclpy.node import Node
 from xarm_pickup_interfaces.srv import MoveToGrid, GripControl, GrabCheck, MoveToDropoff, ServoOff
-
+import traceback
+from std_srvs.srv import Trigger
 # from xarm_pickup_interfaces.srv import YourServiceType  # TODO(STUDENTS): Import your service types here.
 
 try:
@@ -126,8 +127,29 @@ class XArmHardwareNode(Node):
             time.sleep(0.2)
 
             raw = self.arm.getPosition(self.GRIP_SERVO_ID)
-            pos = raw[-1] if isinstance(raw, (list, tuple)) else raw
-            pos = float(pos)
+
+            # 1) None
+            if raw is None:
+                self.get_logger().error("[GrabCheck] getPosition returned None")
+                response.object_detected = False
+                return response
+
+            # 2) list/tuple
+            if isinstance(raw, (list, tuple)):
+                if len(raw) == 0:
+                    self.get_logger().error("[GrabCheck] getPosition returned empty list/tuple")
+                    response.object_detected = False
+                    return response
+                pos = float(raw[-1])
+
+            # 3) anything else (number-like)
+            else:
+                try:
+                    pos = float(raw)
+                except Exception:
+                    self.get_logger().error(f"[GrabCheck] getPosition returned non-numeric type: {type(raw)} val={raw}")
+                    response.object_detected = False
+                    return response
 
             # Learn baseline once (assumes first check happens when empty)
             if self.empty_close_baseline is None:
@@ -146,10 +168,10 @@ class XArmHardwareNode(Node):
 
         except Exception as e:
             self.get_logger().error(f"Grab check failed: {e}")
+            self.get_logger().error(traceback.format_exc())
             response.object_detected = False
 
         return response
-    
     
     def move_to_dropoff_callback(self, request, response):
         if self.arm is None:
