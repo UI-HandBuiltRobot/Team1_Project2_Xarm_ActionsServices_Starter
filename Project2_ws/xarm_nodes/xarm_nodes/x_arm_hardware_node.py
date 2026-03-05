@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-
+import time
 import rclpy
 from rclpy.node import Node
 from xarm_pickup_interfaces.srv import MoveToGrid, GripControl, GrabCheck, MoveToDropoff, ServoOff
@@ -19,8 +19,15 @@ class XArmHardwareNode(Node):
 
         self._connect_usb()
         
-        
-        ###need to edit positions
+        self.GRIP_SERVO_ID = 1      
+        self.GRIP_OPEN = 404
+        self.GRIP_CLOSED = 683
+
+        self.empty_close_baseline = None
+        self.detect_margin = 12.0  # tune later
+
+
+        # From Pose Recorder --
         self.grid_positions = {
         0: [404, 500, 500, 500, 500, 500],
         1: [404, 649, 166, 857, 506, 649],
@@ -75,66 +82,90 @@ class XArmHardwareNode(Node):
             return response
 
         try:
-            joint_targets = self.grid_positions[box_id]
-            self.arm.setPosition(*joint_targets, wait=True)
+            targets = self.grid_positions[box_id]  # list of 6 servo positions (0..1000)
+            JOINT_IDS = [2, 3, 4, 5, 6]      # arm joints only
+            # targets is length 6: [grip, j2, j3, j4, j5, j6]
+            joint_targets = targets[1:]      # drop gripper value
+
+            pairs = [[JOINT_IDS[i], joint_targets[i]] for i in range(5)]
+            self.arm.setPosition(pairs, duration=1500, wait=True)
 
             response.success = True
             response.message = "Moved to grid box."
         except Exception as e:
             response.success = False
-            response.message = str(e)
+            response.message = f"Error occurred: {e}"
 
         return response
     
     
     def grip_control_callback(self, request, response):
-
         if self.arm is None:
             response.success = False
             return response
 
         try:
-            if request.close:
-                self.arm.closeGripper()
-            else:
-                self.arm.openGripper()
+            target = self.GRIP_CLOSED if request.close else self.GRIP_OPEN
+
+            # Command gripper servo directly
+            self.arm.setPosition(self.GRIP_SERVO_ID, target, duration=500, wait=True)
 
             response.success = True
-        except Exception:
+        except Exception as e:
+            self.get_logger().error(f'Gripper control failed: {e}')
             response.success = False
 
         return response
     
     def grab_check_callback(self, request, response):
-
         if self.arm is None:
             response.object_detected = False
             return response
 
         try:
-            gripper_position = self.arm.getGripperPosition()
+            time.sleep(0.2)
 
-            threshold = 200  # Tune this in lab
+            raw = self.arm.getPosition(self.GRIP_SERVO_ID)
+            pos = raw[-1] if isinstance(raw, (list, tuple)) else raw
+            pos = float(pos)
 
-            response.object_detected = gripper_position > threshold
-        except Exception:
+            # Learn baseline once (assumes first check happens when empty)
+            if self.empty_close_baseline is None:
+                self.empty_close_baseline = pos
+                self.get_logger().warn(f"[GrabCheck] Learned empty-close baseline: {pos:.1f}")
+                response.object_detected = False
+                return response
+
+            diff = abs(pos - self.empty_close_baseline)
+            response.object_detected = diff > self.detect_margin
+
+            self.get_logger().info(
+                f"[GrabCheck] pos={pos:.1f}, baseline={self.empty_close_baseline:.1f}, "
+                f"diff={diff:.1f}, margin={self.detect_margin:.1f}, detected={response.object_detected}"
+            )
+
+        except Exception as e:
+            self.get_logger().error(f"Grab check failed: {e}")
             response.object_detected = False
 
         return response
     
     
     def move_to_dropoff_callback(self, request, response):
-
         if self.arm is None:
             response.success = False
             return response
 
         try:
-            self.arm.setPosition(*self.dropoff_position, wait=True)
+            targets = self.dropoff_position
+            JOINT_IDS = [2, 3, 4, 5, 6]
+            joint_targets = targets[1:]
+            pairs = [[JOINT_IDS[i], joint_targets[i]] for i in range(5)]
+            self.arm.setPosition(pairs, duration=1500, wait=True)
             response.success = True
-        except Exception:
+        except Exception as e:
+            self.get_logger().error(f"Dropoff move failed: {e}")
             response.success = False
-
         return response
    
     
