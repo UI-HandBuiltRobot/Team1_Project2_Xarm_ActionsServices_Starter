@@ -1,5 +1,5 @@
 # GrabCheck.srv
-# This service defines the communication format for opening the gripper
+# This service defines the communication format for detecting object grab
 
 ---
 # Service response

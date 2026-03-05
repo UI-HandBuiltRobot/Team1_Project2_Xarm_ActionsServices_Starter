@@ -1,5 +1,5 @@
 # CloseGripper.srv
-# This service defines the communication format for closing the gripper
+# This service defines the communication format for gripper control
 bool close
 
 ---

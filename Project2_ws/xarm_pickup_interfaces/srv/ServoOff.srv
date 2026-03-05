@@ -1,4 +1,5 @@
 # ServoOff.srv
+# This service defines the communication format for the servos
 # service request
 
 ---
