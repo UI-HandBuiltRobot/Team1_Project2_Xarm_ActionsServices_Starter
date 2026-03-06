@@ -27,6 +27,7 @@ from xarm_pickup_interfaces.srv import MoveToGrid
 from xarm_pickup_interfaces.srv import GripControl
 from xarm_pickup_interfaces.srv import GrabCheck
 from xarm_pickup_interfaces.srv import MoveToDropoff
+from xarm_pickup_interfaces.srv import ServoOff
 
 
 
@@ -43,12 +44,16 @@ class RetrieveItemsActionServer(Node):
         self.grip_client = self.create_client(GripControl, 'grip_control')
         self.check_client = self.create_client(GrabCheck, 'grab_check')
         self.dropoff_client = self.create_client(MoveToDropoff, 'move_to_dropoff')
+        self.servo_off_client = self.create_client(ServoOff, 'servo_off')
         
+        self._cancel_requested = False
+
         for client, name in [
             (self.move_grid_client, 'move_to_grid'),
             (self.grip_client, 'grip_control'),
             (self.check_client, 'grab_check'),
             (self.dropoff_client, 'move_to_dropoff'),
+            (self.servo_off_client, 'servo_off'),
         ]:
             if not client.wait_for_service(timeout_sec=5.0):
                 self.get_logger().error(f"Service '{name}' not available.")
@@ -63,7 +68,7 @@ class RetrieveItemsActionServer(Node):
         )
 
         self.get_logger().info('retrieve_items_action_server is running.')
-
+        
     def goal_callback(self, goal_request):
         
         
@@ -81,23 +86,20 @@ class RetrieveItemsActionServer(Node):
         return GoalResponse.ACCEPT
 
     def cancel_callback(self, goal_handle):
-        """Accept or reject a cancel request for an active goal.
-
-        TODO(STUDENTS): Return CancelResponse.REJECT if cancellation should be refused.
-        """
         self.get_logger().info('Received cancel request.')
-        
+        self._cancel_requested = True
         return CancelResponse.ACCEPT
 
-    async def execute_callback(self, goal_handle):
-        """Execute the RetrieveItems goal.
+# Original execute callback - no retry -------
+    """async def execute_callback(self, goal_handle):
+        ""Execute the RetrieveItems goal.
 
         This method is called in its own thread by the MultiThreadedExecutor,
         so blocking calls are safe here. It must publish feedback periodically
         and return a populated Result when finished.
 
         TODO(STUDENTS): Implement the pick-and-place loop here.
-        """
+        ""
         self.get_logger().info('Executing goal...')
 
         feedback_msg = RetrieveItems.Feedback()
@@ -306,7 +308,242 @@ class RetrieveItemsActionServer(Node):
             self.get_logger().error(f"Exception while returning home: {e}")
 
 
+        return result"""
+    
+    ## UPDATED execute callback with retry logic -----
+
+    async def execute_callback(self, goal_handle):
+        self.get_logger().info("Executing goal...")
+        self._cancel_requested = False
+
+        feedback_msg = RetrieveItems.Feedback()
+        result = RetrieveItems.Result()
+
+        requested_items = goal_handle.request.num_items
+        collected = 0
+
+        # Retry settings
+        max_passes = 2
+        settle_open = 0.2
+        settle_close = 0.5
+        settle_move = 0.2
+
+        boxes_pass1 = list(range(1, 10))
+        boxes_pass2 = list(range(9, 0, -1))
+        passes = [boxes_pass1, boxes_pass2]
+
+        last_pub = 0.0
+        cancel_pending = False  # <-- key: "soft cancel" flag
+
+        def publish_ui(state: str, box: int, min_interval: float = 0.06):
+            nonlocal last_pub, collected
+            feedback_msg.state = state
+            feedback_msg.current_box = box
+            feedback_msg.items_collected = collected
+            goal_handle.publish_feedback(feedback_msg)
+
+            now = time.time()
+            dt = now - last_pub
+            if dt < min_interval:
+                time.sleep(min_interval - dt)
+            last_pub = time.time()
+
+        async def call_servo_off():
+            req = ServoOff.Request()
+            return await self.servo_off_client.call_async(req)
+
+        async def await_step(future, step_name: str, poll_s: float = 0.05):
+            nonlocal cancel_pending
+
+            while not future.done():
+                if self._cancel_requested and not cancel_pending:
+                    cancel_pending = True
+                    self.get_logger().warn("Cancel flag detected in await_step")
+                    publish_ui("Cancel requested: finishing current motion", -1)
+                time.sleep(poll_s)
+
+            return future.result()
+
+        async def do_cancel_shutdown():
+            """
+            Called after a step completes, once cancel_pending is True.
+            Must: stop new attempts + servoOff + mark goal canceled.
+            """
+            publish_ui("Cancelling: turning servos off", -1)
+
+            try:
+                off_res = await call_servo_off()
+                if off_res is None or not getattr(off_res, "success", True):
+                    self.get_logger().error("servo_off call failed or returned unsuccessful")
+            except Exception as e:
+                self.get_logger().error(f"servo_off exception: {e}")
+
+            goal_handle.canceled()
+            result.success = False
+            result.items_collected = collected
+            result.message = "Cancelled by user. Current motion finished, servos turned off."
+            publish_ui("CANCELLED", -1)
+            return result
+
+        async def attempt_box(box_id: int, pass_idx: int) -> str:
+            """
+            Returns:
+            'continue' -> go to next box
+            'picked'   -> picked an object
+            'cancel'   -> cancel_pending True after finishing a step
+            'error'    -> service failure
+            """
+
+            # Step 0: Open gripper (box N/A)
+            publish_ui(f"Pass {pass_idx}/{max_passes}: Opening gripper", -1)
+            open_req = GripControl.Request()
+            open_req.close = False
+            open_res = await await_step(self.grip_client.call_async(open_req), "open_grip")
+            if open_res is None or not open_res.success:
+                publish_ui(f"Pass {pass_idx}/{max_passes}: ERROR opening gripper", -1)
+                return "error"
+            time.sleep(settle_open)
+            if cancel_pending:
+                return "cancel"
+
+            # Step 1: Home (box N/A)
+            publish_ui(f"Pass {pass_idx}/{max_passes}: Going home", -1)
+            home_req = MoveToGrid.Request()
+            home_req.box_id = 0
+            home_res = await await_step(self.move_grid_client.call_async(home_req), "home")
+            if home_res is None or not home_res.success:
+                publish_ui(f"Pass {pass_idx}/{max_passes}: ERROR going home", -1)
+                return "error"
+            time.sleep(settle_move)
+            if cancel_pending:
+                return "cancel"
+
+            # Step 2: Move to box (NOW show box_id)
+            publish_ui(f"Pass {pass_idx}/{max_passes}: Moving to box", box_id)
+            move_req = MoveToGrid.Request()
+            move_req.box_id = box_id
+            move_res = await await_step(self.move_grid_client.call_async(move_req), "move_box")
+            if move_res is None or not move_res.success:
+                publish_ui(f"Pass {pass_idx}/{max_passes}: ERROR moving to box", box_id)
+                return "error"
+            time.sleep(settle_move)
+            if cancel_pending:
+                return "cancel"
+
+            # Step 3: Close gripper
+            publish_ui(f"Pass {pass_idx}/{max_passes}: Closing gripper", box_id)
+            close_req = GripControl.Request()
+            close_req.close = True
+            close_res = await await_step(self.grip_client.call_async(close_req), "close_grip")
+            if close_res is None or not close_res.success:
+                publish_ui(f"Pass {pass_idx}/{max_passes}: ERROR closing gripper", box_id)
+                return "error"
+            time.sleep(settle_close)
+            if cancel_pending:
+                return "cancel"
+
+            # Step 4: Grab check
+            publish_ui(f"Pass {pass_idx}/{max_passes}: Checking grasp", box_id)
+            check_req = GrabCheck.Request()
+            check_res = await await_step(self.check_client.call_async(check_req), "grab_check")
+            if check_res is None:
+                publish_ui(f"Pass {pass_idx}/{max_passes}: ERROR grab_check None", box_id)
+                return "error"
+            if cancel_pending:
+                return "cancel"
+
+            if not check_res.object_detected:
+                publish_ui(f"Pass {pass_idx}/{max_passes}: No object (continue)", box_id)
+                # Open gripper and continue
+                _ = await await_step(self.grip_client.call_async(open_req), "open_after_fail")
+                time.sleep(settle_open)
+                if cancel_pending:
+                    return "cancel"
+                return "continue"
+
+            # SUCCESS: retract home
+            publish_ui(f"Pass {pass_idx}/{max_passes}: Object detected! Going home", box_id)
+            _ = await await_step(self.move_grid_client.call_async(home_req), "home_with_obj")
+            time.sleep(settle_move)
+            if cancel_pending:
+                return "cancel"
+
+            # Dropoff
+            publish_ui(f"Pass {pass_idx}/{max_passes}: Moving to dropoff", box_id)
+            drop_res = await await_step(self.dropoff_client.call_async(MoveToDropoff.Request()), "dropoff")
+            if drop_res is None:
+                publish_ui(f"Pass {pass_idx}/{max_passes}: ERROR dropoff None", box_id)
+                return "error"
+            time.sleep(settle_move)
+            if cancel_pending:
+                return "cancel"
+
+            # Release
+            publish_ui(f"Pass {pass_idx}/{max_passes}: Releasing", box_id)
+            _ = await await_step(self.grip_client.call_async(open_req), "release")
+            time.sleep(settle_open)
+            if cancel_pending:
+                return "cancel"
+
+            return "picked"
+
+        # ---------------- MAIN PASS LOOP ----------------
+        for pass_idx in range(1, max_passes + 1):
+            if collected >= requested_items:
+                break
+
+            publish_ui(f"Starting pass {pass_idx}/{max_passes}", -1)
+
+            for box_id in passes[pass_idx - 1]:
+                if collected >= requested_items:
+                    break
+
+                outcome = await attempt_box(box_id, pass_idx)
+
+                if outcome == "cancel":
+                    return await do_cancel_shutdown()
+
+                if outcome == "picked":
+                    collected += 1
+                    publish_ui(f"Collected {collected}/{requested_items}", box_id)
+
+                # continue/error just proceeds
+
+                if collected >= requested_items:
+                    break
+
+            if pass_idx < max_passes and collected < requested_items:
+                publish_ui(f"Retry needed: {collected}/{requested_items}. Starting pass {pass_idx+1}/{max_passes}", -1)
+
+            if cancel_pending:
+                return await do_cancel_shutdown()
+
+        # ---------------- FINISH / RESULT ----------------
+        result.items_collected = collected
+
+        if collected >= requested_items:
+            goal_handle.succeed()
+            result.success = True
+            result.message = f"Successfully collected {collected}/{requested_items}."
+            publish_ui("SUCCESS", -1)
+        else:
+            goal_handle.abort()
+            result.success = False
+            result.message = f"Not enough objects found. Collected {collected}/{requested_items} after {max_passes} passes."
+            publish_ui("FAILED", -1)
+
+        # Return home at end (best effort)
+        publish_ui("Returning home", -1)
+        home_req_final = MoveToGrid.Request()
+        home_req_final.box_id = 0
+        _ = await await_step(self.move_grid_client.call_async(home_req_final), "final_home")
+
+        # If cancel happened during final_home, still satisfy servoOff requirement
+        if cancel_pending:
+            return await do_cancel_shutdown()
+
         return result
+
 
 
 def main(args=None):

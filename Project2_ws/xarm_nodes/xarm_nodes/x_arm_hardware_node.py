@@ -21,14 +21,30 @@ class XArmHardwareNode(Node):
         self._connect_usb()
         
         self.GRIP_SERVO_ID = 1      
-        self.GRIP_OPEN = 404
-        self.GRIP_CLOSED = 683
+        self.GRIP_OPEN = 323
+        self.GRIP_CLOSED = 727
 
         self.empty_close_baseline = None
         self.detect_margin = 12.0  # tune later
 
 
-        # From Pose Recorder --
+        self.grid_positions  = {
+            0: [323, 500, 500, 500, 500, 500],
+            1: [323, 656, 200, 829, 466, 617],
+            2: [323, 526, 151, 808, 462, 513],
+            3: [323, 416, 157, 777, 425, 391],
+            4: [323, 621, 142, 625, 317, 587],
+            5: [323, 531, 193, 739, 383, 512],
+            6: [323, 454, 109, 585, 299, 417],
+            7: [323, 611, 228, 617, 282, 567],
+            8: [323, 525, 183, 572, 269, 510],
+            9: [323, 465, 164, 519, 243, 427],
+        }
+
+        self.dropoff_position = [727, 466, 95, 673, 437, 799]
+# ================== COPY/PASTE ABOVE =================
+
+        '''# From Pose Recorder --
         self.grid_positions = {
         0: [404, 500, 500, 500, 500, 500],
         1: [404, 649, 166, 857, 506, 649],
@@ -42,7 +58,7 @@ class XArmHardwareNode(Node):
         9: [404, 473, 179, 654, 327, 431],
         }
 
-        self.dropoff_position = [683, 516, 52, 582, 343, 877]
+        self.dropoff_position = [683, 516, 52, 582, 343, 877]'''
 
         # TODO(STUDENTS): Add your service servers here. Make sure that all services are defined in the xarm_pickup_interfaces package and that you import them at the top of this file.
         # Example:
