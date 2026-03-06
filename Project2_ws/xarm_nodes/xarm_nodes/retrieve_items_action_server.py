@@ -314,6 +314,7 @@ class RetrieveItemsActionServer(Node):
 
     async def execute_callback(self, goal_handle):
         self.get_logger().info("Executing goal...")
+        # IMPORTANT: reset cancel flag at start of each goal
         self._cancel_requested = False
 
         feedback_msg = RetrieveItems.Feedback()
@@ -333,7 +334,7 @@ class RetrieveItemsActionServer(Node):
         passes = [boxes_pass1, boxes_pass2]
 
         last_pub = 0.0
-        cancel_pending = False  # <-- key: "soft cancel" flag
+        cancel_pending = False  # "soft cancel": finish current step, then stop
 
         def publish_ui(state: str, box: int, min_interval: float = 0.06):
             nonlocal last_pub, collected
@@ -348,20 +349,36 @@ class RetrieveItemsActionServer(Node):
                 time.sleep(min_interval - dt)
             last_pub = time.time()
 
+        def mark_cancel_pending_once():
+            nonlocal cancel_pending
+            if self._cancel_requested and not cancel_pending:
+                cancel_pending = True
+                self.get_logger().warn("Cancel requested -> will stop after current step")
+                publish_ui("Cancel requested: stopping after current step", -1)
+
+        def sleep_with_cancel(duration_s: float, poll_s: float = 0.05):
+            """
+            Sleep in small chunks so cancel is detected quickly during settle times.
+            """
+            end_t = time.time() + duration_s
+            while time.time() < end_t:
+                mark_cancel_pending_once()
+                if cancel_pending:
+                    return
+                time.sleep(min(poll_s, end_t - time.time()))
+
         async def call_servo_off():
             req = ServoOff.Request()
             return await self.servo_off_client.call_async(req)
 
         async def await_step(future, step_name: str, poll_s: float = 0.05):
-            nonlocal cancel_pending
-
+            """
+            Wait for a service call to finish.
+            If cancel is pressed during the wait, set cancel_pending but DO NOT exit early.
+            """
             while not future.done():
-                if self._cancel_requested and not cancel_pending:
-                    cancel_pending = True
-                    self.get_logger().warn("Cancel flag detected in await_step")
-                    publish_ui("Cancel requested: finishing current motion", -1)
+                mark_cancel_pending_once()
                 time.sleep(poll_s)
-
             return future.result()
 
         async def do_cancel_shutdown():
@@ -381,7 +398,7 @@ class RetrieveItemsActionServer(Node):
             goal_handle.canceled()
             result.success = False
             result.items_collected = collected
-            result.message = "Cancelled by user. Current motion finished, servos turned off."
+            result.message = "Cancelled by user. Current step finished, servos turned off."
             publish_ui("CANCELLED", -1)
             return result
 
@@ -393,6 +410,12 @@ class RetrieveItemsActionServer(Node):
             'cancel'   -> cancel_pending True after finishing a step
             'error'    -> service failure
             """
+            nonlocal cancel_pending
+
+            # BEFORE starting any new work for this box, respect cancel
+            mark_cancel_pending_once()
+            if cancel_pending:
+                return "cancel"
 
             # Step 0: Open gripper (box N/A)
             publish_ui(f"Pass {pass_idx}/{max_passes}: Opening gripper", -1)
@@ -402,7 +425,9 @@ class RetrieveItemsActionServer(Node):
             if open_res is None or not open_res.success:
                 publish_ui(f"Pass {pass_idx}/{max_passes}: ERROR opening gripper", -1)
                 return "error"
-            time.sleep(settle_open)
+
+            # settle while still watching cancel
+            sleep_with_cancel(settle_open)
             if cancel_pending:
                 return "cancel"
 
@@ -414,7 +439,8 @@ class RetrieveItemsActionServer(Node):
             if home_res is None or not home_res.success:
                 publish_ui(f"Pass {pass_idx}/{max_passes}: ERROR going home", -1)
                 return "error"
-            time.sleep(settle_move)
+
+            sleep_with_cancel(settle_move)
             if cancel_pending:
                 return "cancel"
 
@@ -426,7 +452,8 @@ class RetrieveItemsActionServer(Node):
             if move_res is None or not move_res.success:
                 publish_ui(f"Pass {pass_idx}/{max_passes}: ERROR moving to box", box_id)
                 return "error"
-            time.sleep(settle_move)
+
+            sleep_with_cancel(settle_move)
             if cancel_pending:
                 return "cancel"
 
@@ -438,7 +465,8 @@ class RetrieveItemsActionServer(Node):
             if close_res is None or not close_res.success:
                 publish_ui(f"Pass {pass_idx}/{max_passes}: ERROR closing gripper", box_id)
                 return "error"
-            time.sleep(settle_close)
+
+            sleep_with_cancel(settle_close)
             if cancel_pending:
                 return "cancel"
 
@@ -449,6 +477,8 @@ class RetrieveItemsActionServer(Node):
             if check_res is None:
                 publish_ui(f"Pass {pass_idx}/{max_passes}: ERROR grab_check None", box_id)
                 return "error"
+
+            # If cancel came during check wait, stop now
             if cancel_pending:
                 return "cancel"
 
@@ -456,7 +486,7 @@ class RetrieveItemsActionServer(Node):
                 publish_ui(f"Pass {pass_idx}/{max_passes}: No object (continue)", box_id)
                 # Open gripper and continue
                 _ = await await_step(self.grip_client.call_async(open_req), "open_after_fail")
-                time.sleep(settle_open)
+                sleep_with_cancel(settle_open)
                 if cancel_pending:
                     return "cancel"
                 return "continue"
@@ -464,7 +494,7 @@ class RetrieveItemsActionServer(Node):
             # SUCCESS: retract home
             publish_ui(f"Pass {pass_idx}/{max_passes}: Object detected! Going home", box_id)
             _ = await await_step(self.move_grid_client.call_async(home_req), "home_with_obj")
-            time.sleep(settle_move)
+            sleep_with_cancel(settle_move)
             if cancel_pending:
                 return "cancel"
 
@@ -474,14 +504,15 @@ class RetrieveItemsActionServer(Node):
             if drop_res is None:
                 publish_ui(f"Pass {pass_idx}/{max_passes}: ERROR dropoff None", box_id)
                 return "error"
-            time.sleep(settle_move)
+
+            sleep_with_cancel(settle_move)
             if cancel_pending:
                 return "cancel"
 
             # Release
             publish_ui(f"Pass {pass_idx}/{max_passes}: Releasing", box_id)
             _ = await await_step(self.grip_client.call_async(open_req), "release")
-            time.sleep(settle_open)
+            sleep_with_cancel(settle_open)
             if cancel_pending:
                 return "cancel"
 
@@ -498,6 +529,11 @@ class RetrieveItemsActionServer(Node):
                 if collected >= requested_items:
                     break
 
+                # If cancel requested between boxes, stop before starting next box
+                mark_cancel_pending_once()
+                if cancel_pending:
+                    return await do_cancel_shutdown()
+
                 outcome = await attempt_box(box_id, pass_idx)
 
                 if outcome == "cancel":
@@ -506,11 +542,6 @@ class RetrieveItemsActionServer(Node):
                 if outcome == "picked":
                     collected += 1
                     publish_ui(f"Collected {collected}/{requested_items}", box_id)
-
-                # continue/error just proceeds
-
-                if collected >= requested_items:
-                    break
 
             if pass_idx < max_passes and collected < requested_items:
                 publish_ui(f"Retry needed: {collected}/{requested_items}. Starting pass {pass_idx+1}/{max_passes}", -1)
@@ -532,13 +563,13 @@ class RetrieveItemsActionServer(Node):
             result.message = f"Not enough objects found. Collected {collected}/{requested_items} after {max_passes} passes."
             publish_ui("FAILED", -1)
 
-        # Return home at end (best effort)
+        # Return home at end (best effort) — but still respect cancel after this step
         publish_ui("Returning home", -1)
         home_req_final = MoveToGrid.Request()
         home_req_final.box_id = 0
         _ = await await_step(self.move_grid_client.call_async(home_req_final), "final_home")
+        sleep_with_cancel(settle_move)
 
-        # If cancel happened during final_home, still satisfy servoOff requirement
         if cancel_pending:
             return await do_cancel_shutdown()
 
